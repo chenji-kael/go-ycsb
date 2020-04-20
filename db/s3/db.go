@@ -3,6 +3,12 @@ package s3
 import (
 	"bytes"
 	"context"
+	"io/ioutil"
+	"math/rand"
+	"sort"
+	"strconv"
+	"time"
+
 	"github.com/dustin/go-humanize"
 	"github.com/journeymidnight/aws-sdk-go/aws"
 	"github.com/journeymidnight/aws-sdk-go/aws/credentials"
@@ -11,22 +17,19 @@ import (
 	"github.com/magiconair/properties"
 	"github.com/pingcap/go-ycsb/pkg/prop"
 	"github.com/pingcap/go-ycsb/pkg/ycsb"
-	"io/ioutil"
-	"math/rand"
-	"sort"
-	"strconv"
-	"time"
 )
 
 const (
-	endpoint        = "s3.endpoint"
-	accessKey       = "s3.accessKeyId"
-	secretKey       = "s3.secretKey"
-	bucket          = "s3.bucket"
-	useHttps        = "s3.useHttps"
-	disableMd5Check = "s3.disableMd5"
-	dataLength      = "s3.dataLength"
-	onlyHead        = "s3.onlyHead"
+	endpoint         = "s3.endpoint"
+	accessKey        = "s3.accessKeyId"
+	secretKey        = "s3.secretKey"
+	bucket           = "s3.bucket"
+	useHttps         = "s3.useHttps"
+	useAppend        = "s3.useAppend"
+	appendTargetSize = "s3.appendTargetSize"
+	disableMd5Check  = "s3.disableMd5"
+	dataLength       = "s3.dataLength"
+	onlyHead         = "s3.onlyHead"
 )
 
 type contextKey string
@@ -36,15 +39,17 @@ const stateKey = contextKey("s3Client")
 type s3Creator struct{}
 
 type s3Options struct {
-	endpoint        string
-	accessKey       string
-	secretKey       string
-	bucket          string
-	useHttps        bool
-	disableMd5Check bool
-	dataLength      uint64
-	validHead       bool
-	randomKey       bool
+	endpoint         string
+	accessKey        string
+	secretKey        string
+	bucket           string
+	useAppend        bool
+	appendTargetSize uint64
+	useHttps         bool
+	disableMd5Check  bool
+	dataLength       uint64
+	validHead        bool
+	randomKey        bool
 }
 
 type s3Client struct {
@@ -68,26 +73,37 @@ func getOptions(p *properties.Properties) s3Options {
 	s3AccessKey := p.GetString(accessKey, "hehehehe")
 	s3SecretKey := p.GetString(secretKey, "hehehehe")
 	s3Bucket := p.GetString(bucket, "hehe")
+	s3UseAppend := p.GetBool(useAppend, false)
+
 	s3UseHttps := p.GetBool(useHttps, false)
 	s3DisableMd5 := p.GetBool(disableMd5Check, false)
 	s3DataLength, err := humanize.ParseBytes(p.GetString(dataLength, "4KiB"))
 	if err != nil {
 		panic(err)
 	}
+	s3AppendTargetSize, err := humanize.ParseBytes(p.GetString(appendTargetSize, "0KiB"))
+	if err != nil {
+		panic(err)
+	}
+	if s3AppendTargetSize == 0 {
+		s3AppendTargetSize = s3DataLength
+	}
 	s3OnlyHead := p.GetBool(onlyHead, false)
 	random := p.GetBool(prop.RandomKey, false)
 	rand.Seed(time.Now().UnixNano())
 
 	return s3Options{
-		endpoint:        s3Endpoint,
-		accessKey:       s3AccessKey,
-		secretKey:       s3SecretKey,
-		bucket:          s3Bucket,
-		useHttps:        s3UseHttps,
-		disableMd5Check: s3DisableMd5,
-		dataLength:      s3DataLength,
-		validHead:       s3OnlyHead,
-		randomKey:       random,
+		endpoint:         s3Endpoint,
+		accessKey:        s3AccessKey,
+		secretKey:        s3SecretKey,
+		bucket:           s3Bucket,
+		useAppend:        s3UseAppend,
+		appendTargetSize: s3AppendTargetSize,
+		useHttps:         s3UseHttps,
+		disableMd5Check:  s3DisableMd5,
+		dataLength:       s3DataLength,
+		validHead:        s3OnlyHead,
+		randomKey:        random,
 	}
 }
 
@@ -268,15 +284,32 @@ func (c *s3Client) Insert(ctx context.Context, table string, key string, values 
 	}
 	state := ctx.Value(stateKey).(*s3State)
 	client := state.c
-	input := &s3.PutObjectInput{
-		Bucket: aws.String(state.b),
-		Key:    aws.String(value),
-		Body:   bytes.NewReader(state.d),
+	if c.p.useAppend == false {
+		input := &s3.PutObjectInput{
+			Bucket: aws.String(state.b),
+			Key:    aws.String(value),
+			Body:   bytes.NewReader(state.d),
+		}
+		_, err := client.PutObject(input)
+		if err != nil {
+			return err
+		}
+	} else {
+		count := int(c.p.appendTargetSize / c.p.dataLength)
+		for i := 0; i < count; i++ {
+			append := &s3.AppendObjectInput{
+				Bucket:   aws.String(state.b),
+				Key:      aws.String(value),
+				Body:     bytes.NewReader(state.d),
+				Position: aws.Int64(int64(c.p.dataLength) * int64(i)),
+			}
+			_, err := client.AppendObject(append)
+			if err != nil {
+				return err
+			}
+		}
 	}
-	_, err := client.PutObject(input)
-	if err != nil {
-		return err
-	}
+
 	return nil
 }
 
