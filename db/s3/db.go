@@ -3,6 +3,7 @@ package s3
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io/ioutil"
 	"math/rand"
 	"sort"
@@ -285,6 +286,7 @@ func (c *s3Client) Insert(ctx context.Context, table string, key string, values 
 	state := ctx.Value(stateKey).(*s3State)
 	client := state.c
 	if c.p.useAppend == false {
+		fmt.Print("append = false\n")
 		input := &s3.PutObjectInput{
 			Bucket: aws.String(state.b),
 			Key:    aws.String(value),
@@ -295,7 +297,11 @@ func (c *s3Client) Insert(ctx context.Context, table string, key string, values 
 			return err
 		}
 	} else {
+		if c.p.appendTargetSize == 0 {
+			c.p.appendTargetSize = c.p.dataLength
+		}
 		count := int(c.p.appendTargetSize / c.p.dataLength)
+		fmt.Print("append = true\n", count, " ", state.b, " ", value)
 		for i := 0; i < count; i++ {
 			append := &s3.AppendObjectInput{
 				Bucket:   aws.String(state.b),
