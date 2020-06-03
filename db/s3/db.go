@@ -313,6 +313,7 @@ func (c *s3Client) Insert(ctx context.Context, table string, key string, values 
 			if err != nil {
 				return err
 			}
+			time.Sleep(1 * time.Second)
 		}
 	}
 
